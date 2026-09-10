@@ -1,0 +1,170 @@
+================================================================================
+  DIGITAL TWIN BUILDER - INSTALLATION & USAGE INSTRUCTIONS
+  Version 1.0 | Unreal Engine 5.6+ (Editor only)
+================================================================================
+
+WHAT THIS PLUGIN DOES
+---------------------
+- Pick images (Ctrl+click) or one video
+- Runs YOLO-World on system Python 3.12 (not Unreal's embedded Python)
+- Builds a furniture twin from detections
+- Spawns colored unlit meshes into /Game/DigitalTwin/Maps/Lvl_DigitalTwin
+- Live progress in Output Log (Packager-style)
+
+THIS FOLDER IS STANDALONE.
+You do NOT need Content/python/EditorTools/DigitalTwinBuilder
+or Content/python/DigitalTwinBuilder / ObjectLocator from another project.
+Zip and share this DigitalTwinBuilder folder only.
+
+
+================================================================================
+STEP 1: WHERE TO SAVE THE PLUGIN
+================================================================================
+
+Copy the entire "DigitalTwinBuilder" folder into your Unreal project's Plugins
+folder. The path must look like this:
+
+  YourProject/
+  ├── Content/
+  ├── Plugins/
+  │   └── DigitalTwinBuilder/          <-- paste plugin here
+  │       ├── DigitalTwinBuilder.uplugin
+  │       ├── INSTALL_INSTRUCTIONS.txt
+  │       └── Content/
+  │           └── Python/
+  └── YourProject.uproject
+
+Example (Windows):
+  C:\Users\YourName\Documents\Unreal Projects\MyGame\Plugins\DigitalTwinBuilder
+
+IMPORTANT:
+- The folder name must stay "DigitalTwinBuilder" (matches the .uplugin file).
+- Do NOT put it inside Content/ — it must be in Plugins/ at project root.
+
+
+================================================================================
+STEP 2: ENABLE REQUIRED ENGINE PLUGINS
+================================================================================
+
+Open Unreal Editor → Edit → Plugins. Search and ENABLE these:
+
+  1. Python Editor Script Plugin   (built-in, name: "Python")
+  2. Editor Scripting Utilities
+
+Restart the editor after enabling.
+
+
+================================================================================
+STEP 3: ENABLE THIS PLUGIN
+================================================================================
+
+Edit → Plugins → search "Digital Twin Builder" → Enable → Restart.
+
+Or add to YourProject.uproject inside the "Plugins" array:
+
+  {
+    "Name": "DigitalTwinBuilder",
+    "Enabled": true
+  }
+
+
+================================================================================
+STEP 4: OPTIONAL PROJECT SETTINGS (IF MENU DOES NOT APPEAR)
+================================================================================
+
+Project Settings → Plugins → Python → Additional Paths, add:
+
+  Plugins/DigitalTwinBuilder/Content/Python
+
+Restart Unreal completely (not just reload level).
+
+
+================================================================================
+STEP 5: SYSTEM PYTHON (REQUIRED FOR YOLO)
+================================================================================
+
+Unreal's Python cannot run ultralytics. Install Python 3.12 on Windows, then:
+
+  py -3.12 -m pip install -r "Plugins/DigitalTwinBuilder/Content/Python/Pipeline/requirements.txt"
+
+Packages: ultralytics, opencv-python, numpy
+
+First run may download yolov8s-world.pt (needs internet). You can also copy
+yolov8s-world.pt next to export_unreal_scene.py in Content/Python/Pipeline/.
+
+
+================================================================================
+HOW TO USE
+================================================================================
+
+1. Restart Unreal Editor (required after first install).
+
+2. Top menu: Tools → Digital Twin Builder → Build Digital Twin from Images/Video...
+
+3. In the file dialog:
+   - Multiple images (Ctrl+click), OR
+   - One video
+
+4. Watch Output Log for PROGRESS lines.
+
+5. When finished, the twin is in:
+   Content Browser → DigitalTwin/Maps → Lvl_DigitalTwin
+
+ALTERNATIVE - Run from Output Log (Python dropdown):
+
+  import importlib, digital_twin_builder
+  importlib.reload(digital_twin_builder)
+  digital_twin_builder.run()
+
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Menu item missing?
+  → Restart editor. Check Output Log for:
+    "Digital Twin Builder: Tools menu registered."
+  → Add Additional Paths (Step 4) and restart.
+
+Preprocess failed / ultralytics missing?
+  → Confirm: py -3.12 -c "import ultralytics; print('ok')"
+  → Install requirements from Step 5.
+
+export_unreal_scene.py not found?
+  → You copied an incomplete plugin. The Pipeline folder must be inside
+    Plugins/DigitalTwinBuilder/Content/Python/Pipeline/
+
+Spawned into a black / empty sky?
+  → Open Content/DigitalTwin/Maps/Lvl_DigitalTwin
+  → Viewport should auto-frame the twin.
+
+Script runs outside Unreal?
+  → The Tools menu / digital_twin_builder.py ONLY work inside Unreal Editor.
+  → Pipeline/export_unreal_scene.py can be tested with py -3.12 on its own.
+
+
+================================================================================
+SHARING / UPDATING
+================================================================================
+
+To share: zip only the DigitalTwinBuilder folder (not Binaries/Intermediate).
+
+To update: replace the plugin folder and restart the editor.
+
+
+================================================================================
+SUPPORT FILES IN THIS PACKAGE
+================================================================================
+
+  DigitalTwinBuilder.uplugin
+  README.md
+  INSTALL_INSTRUCTIONS.txt
+  Content/Python/init_unreal.py              Tools menu
+  Content/Python/digital_twin_builder.py     Editor entry
+  Content/Python/dt_*.py                     Picker, progress, spawn, materials
+  Content/Python/Pipeline/export_unreal_scene.py
+  Content/Python/Pipeline/dt_detect.py
+  Content/Python/Pipeline/dt_furniture.py
+  Content/Python/Pipeline/requirements.txt
+
+================================================================================
