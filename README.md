@@ -36,6 +36,21 @@ Unreal Python only handles the file picker, progress, and spawning. Detection al
 
 ## Install the plugin
 
+### Option 1 — Clone from GitHub (includes models)
+
+YOLO and CLIP weights are stored with **Git LFS**. Install [Git LFS](https://git-lfs.com), then:
+
+```bat
+git lfs install
+git clone https://github.com/M-Usamah/DigitalTwinBuilder.git
+```
+
+Copy the cloned `DigitalTwinBuilder` folder into your Unreal project’s `Plugins` directory.
+
+If a clone is missing `.pt` files, run `git lfs pull` inside the repo.
+
+### Option 2 — Copy the folder
+
 1. Copy the entire **`DigitalTwinBuilder`** folder into your project’s `Plugins` directory.
 
    The path must look like this:
@@ -63,7 +78,7 @@ Unreal Python only handles the file picker, progress, and spawning. Detection al
    py -3.12 -m pip install -r "Plugins\DigitalTwinBuilder\Content\Python\Pipeline\requirements.txt"
    ```
 
-   First run may download `yolov8s-world.pt` (internet required). You can also copy that weights file next to `Content/Python/Pipeline/export_unreal_scene.py`.
+   Weights ship with the plugin (`yolov8s-world.pt` and CLIP `ViT-B-32.pt`). If they are missing, the first run may download them (internet required).
 
 ---
 

@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Unreal / editor
+Binaries/
+Intermediate/
+Saved/
+*.sln
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db
