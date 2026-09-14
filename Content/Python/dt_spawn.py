@@ -12,6 +12,175 @@ from dt_progress import log_line
 from dt_materials import apply_color
 
 CONTENT_MAPS_DIR = "/Game/DigitalTwin/Maps"
+CONTENT_MESH_DIR = "/Game/DigitalTwin/Meshes"
+
+# Initial editor camera: above the foot of the bed, looking toward the headboard.
+TWIN_CAM_LOC = (0.0, -420.0, 820.0)
+TWIN_CAM_ROT = (-56.0, 90.0, 0.0)
+_CAM_TICK_HANDLE = None
+
+
+def _ensure_content_dir(path: str):
+    try:
+        if not unreal.EditorAssetLibrary.does_directory_exist(path):
+            unreal.EditorAssetLibrary.make_directory(path)
+    except Exception:
+        try:
+            unreal.EditorAssetLibrary.make_directory(path)
+        except Exception:
+            pass
+
+
+def _list_static_meshes(content_path: str):
+    meshes = []
+    try:
+        for asset_path in unreal.EditorAssetLibrary.list_assets(
+            content_path, recursive=True, include_folder=False
+        ):
+            asset = unreal.EditorAssetLibrary.load_asset(asset_path)
+            if isinstance(asset, unreal.StaticMesh):
+                meshes.append(asset)
+    except Exception:
+        pass
+    return meshes
+
+
+def _clear_old_imported_meshes(log_file=None):
+    """Drop previous SM_DT assets so broken TripoSR imports are not reused."""
+    try:
+        paths = unreal.EditorAssetLibrary.list_assets(
+            CONTENT_MESH_DIR, recursive=True, include_folder=False
+        )
+    except Exception:
+        return
+    removed = 0
+    for asset_path in paths:
+        name = str(asset_path)
+        if "SM_DT_" in name or "SM_DTLib_" in name:
+            try:
+                if unreal.EditorAssetLibrary.delete_asset(asset_path):
+                    removed += 1
+            except Exception:
+                pass
+    if removed:
+        log_line("[DigitalTwin] Cleared {} old imported mesh(es)".format(removed), log_file)
+
+
+def import_obj_mesh(obj_path: str, asset_name: str, log_file=None):
+    """Import a furniture OBJ/GLB into /Game/DigitalTwin/Meshes."""
+    obj_path = norm(obj_path)
+    if not obj_path or not os.path.isfile(obj_path):
+        log_line("[DigitalTwin] Missing mesh: {}".format(obj_path), log_file)
+        return None
+    _ensure_content_dir(CONTENT_MESH_DIR)
+    dest_name = "SM_DTLib_" + "".join(ch if ch.isalnum() else "_" for ch in asset_name)[:40]
+    asset_path = "{}/{}".format(CONTENT_MESH_DIR, dest_name)
+    try:
+        if unreal.EditorAssetLibrary.does_asset_exist(asset_path):
+            unreal.EditorAssetLibrary.delete_asset(asset_path)
+    except Exception:
+        pass
+
+    imported = []
+    try:
+        task = unreal.AssetImportTask()
+        task.filename = obj_path
+        task.destination_path = CONTENT_MESH_DIR
+        task.destination_name = dest_name
+        task.replace_existing = True
+        task.automated = True
+        task.save = True
+        ext = os.path.splitext(obj_path)[1].lower()
+        factory = None
+        if ext not in {".glb", ".gltf"}:
+            factory = getattr(unreal, "ObjFactory", None)
+            if factory is None:
+                factory = getattr(unreal, "FbxFactory", None)
+        if factory is not None:
+            try:
+                task.factory = factory()
+            except Exception:
+                pass
+        unreal.AssetToolsHelpers.get_asset_tools().import_asset_tasks([task])
+        try:
+            imported = [str(p) for p in task.get_editor_property("imported_object_paths")]
+        except Exception:
+            imported = []
+    except Exception as exc:
+        log_line("[DigitalTwin] AssetImportTask OBJ failed: {}".format(exc), log_file)
+
+    mesh = None
+    for path in imported:
+        asset = unreal.EditorAssetLibrary.load_asset(path)
+        if isinstance(asset, unreal.StaticMesh):
+            mesh = asset
+            break
+
+    if mesh is None and hasattr(unreal, "InterchangeManager"):
+        try:
+            manager = unreal.InterchangeManager.get_interchange_manager_scripted()
+            source = unreal.InterchangeManager.create_source_data(obj_path)
+            params = unreal.ImportAssetParameters()
+            try:
+                params.set_editor_property("is_automated", True)
+            except Exception:
+                params.is_automated = True
+            manager.import_asset(CONTENT_MESH_DIR, source, params)
+        except Exception as exc:
+            log_line("[DigitalTwin] Interchange OBJ failed: {}".format(exc), log_file)
+        for asset in _list_static_meshes(CONTENT_MESH_DIR):
+            name = str(asset.get_name())
+            if dest_name in name or "mesh" in name.lower():
+                mesh = asset
+                break
+        if mesh is None:
+            meshes = _list_static_meshes(CONTENT_MESH_DIR)
+            if meshes:
+                mesh = meshes[-1]
+
+    if mesh is None:
+        log_line("[DigitalTwin] Could not import {}".format(obj_path), log_file)
+    else:
+        log_line("[DigitalTwin] Imported mesh {}".format(mesh.get_path_name()), log_file)
+    return mesh
+
+
+def _mesh_extent_z(mesh) -> float:
+    try:
+        bounds = mesh.get_bounds()
+        extent = getattr(bounds, "box_extent", None)
+        if extent is not None:
+            return max(float(extent.z), 0.5)
+    except Exception:
+        pass
+    try:
+        box = mesh.get_bounding_box()
+        return max(float(box.max.z - box.min.z) * 0.5, 0.5)
+    except Exception:
+        return 50.0
+
+
+def _imported_uniform_scale(mesh, target_xyz, unit_scale: float):
+    """Uniform scale so the mesh XY span matches the authored plotly AABB."""
+    target = max(float(target_xyz[0]), float(target_xyz[2]), 4.0) * unit_scale
+    span = 50.0
+    try:
+        bounds = mesh.get_bounds()
+        ext = getattr(bounds, "box_extent", None)
+        if ext is not None:
+            span = max(float(ext.x), float(ext.y), 1.0) * 2.0
+    except Exception:
+        pass
+    s = target / max(span, 1.0)
+    return unreal.Vector(s, s, s)
+
+
+def _imported_scale(mesh, target_xyz, unit_scale: float):
+    """Uniform scale so imported mesh height matches SIZE_HINT Y * unit_scale."""
+    target_h = max(float(target_xyz[1]) * unit_scale, 4.0)
+    extent_z = _mesh_extent_z(mesh)
+    s = target_h / (extent_z * 2.0)
+    return unreal.Vector(s, s, s)
 
 
 def plotly_to_unreal(loc_xyz, yaw_deg, unit_scale: float):
@@ -238,7 +407,7 @@ def _configure_directional_light(light):
         comp = getattr(light, "directional_light_component", None)
     if comp is None:
         return
-    _set_prop(comp, ["intensity", "Intensity"], 4.0)
+    _set_prop(comp, ["intensity", "Intensity"], 2.0)
     _set_prop(comp, ["indirect_lighting_intensity", "IndirectLightingIntensity"], 1.0)
     _set_prop(comp, ["volumetric_scattering_intensity", "VolumetricScatteringIntensity"], 1.0)
     try:
@@ -300,11 +469,11 @@ def _configure_post_process(volume):
     if settings is None:
         return
     _set_prop(settings, ["override_auto_exposure_min_brightness", "bOverride_AutoExposureMinBrightness"], True)
-    _set_prop(settings, ["auto_exposure_min_brightness", "AutoExposureMinBrightness"], 0.8)
+    _set_prop(settings, ["auto_exposure_min_brightness", "AutoExposureMinBrightness"], 0.6)
     _set_prop(settings, ["override_auto_exposure_max_brightness", "bOverride_AutoExposureMaxBrightness"], True)
-    _set_prop(settings, ["auto_exposure_max_brightness", "AutoExposureMaxBrightness"], 1.2)
+    _set_prop(settings, ["auto_exposure_max_brightness", "AutoExposureMaxBrightness"], 1.0)
     _set_prop(settings, ["override_auto_exposure_bias", "bOverride_AutoExposureBias"], True)
-    _set_prop(settings, ["auto_exposure_bias", "AutoExposureBias"], 0.0)
+    _set_prop(settings, ["auto_exposure_bias", "AutoExposureBias"], -0.6)
     try:
         volume.set_editor_property("settings", settings)
     except Exception:
@@ -314,10 +483,12 @@ def _configure_post_process(volume):
             pass
 
 
-def setup_level_environment(scene: str, log_file=None):
+def setup_level_environment(scene: str, log_file=None, ground_rgb=None, ground_scale=12.0):
     """Ground + strong lights + exposure so Lit viewport is not black."""
     subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
     folder = "DigitalTwin/{}".format(scene)
+    floor = ground_rgb or (0.45, 0.46, 0.48)
+    gscale = float(ground_scale or 12.0)
 
     existing = {}
     for actor in subsystem.get_all_level_actors():
@@ -337,10 +508,10 @@ def setup_level_environment(scene: str, log_file=None):
                 plane,
                 unreal.Vector(0.0, 0.0, 0.0),
                 unreal.Rotator(pitch=0.0, yaw=0.0, roll=0.0),
-                unreal.Vector(12.0, 12.0, 1.0),
+                unreal.Vector(gscale, gscale, 1.0),
                 "DT_Ground",
                 folder,
-                rgb=(0.45, 0.46, 0.48),
+                rgb=floor,
             )
             log_line("[DigitalTwin] Added ground plane", log_file)
 
@@ -363,7 +534,7 @@ def setup_level_environment(scene: str, log_file=None):
         sky = _spawn_typed_actor(
             subsystem,
             ("SkyLight", "/Script/Engine.SkyLight"),
-            unreal.Vector(0.0, 0.0, 100.0),
+            unreal.Vector(0.0, -800.0, 1800.0),
             unreal.Rotator(0.0, 0.0, 0.0),
             "DT_SkyLight",
             folder,
@@ -377,14 +548,14 @@ def setup_level_environment(scene: str, log_file=None):
         fill = _spawn_typed_actor(
             subsystem,
             ("PointLight", "/Script/Engine.PointLight"),
-            unreal.Vector(0.0, 0.0, 450.0),
+            unreal.Vector(350.0, -550.0, 700.0),
             unreal.Rotator(0.0, 0.0, 0.0),
             "DT_FillLight",
             folder,
             log_file,
         )
         if fill is not None:
-            _configure_point_light(fill, intensity=1500.0, radius=2500.0)
+            _configure_point_light(fill, intensity=700.0, radius=2500.0)
             log_line("[DigitalTwin] Added fill point light", log_file)
 
     if "DT_KeyLight" not in existing:
@@ -398,7 +569,7 @@ def setup_level_environment(scene: str, log_file=None):
             log_file,
         )
         if key is not None:
-            _configure_point_light(key, intensity=1200.0, radius=2000.0)
+            _configure_point_light(key, intensity=500.0, radius=2000.0)
             log_line("[DigitalTwin] Added key point light", log_file)
 
     if "DT_SkyAtmosphere" not in existing:
@@ -418,7 +589,7 @@ def setup_level_environment(scene: str, log_file=None):
         pp = _spawn_typed_actor(
             subsystem,
             ("PostProcessVolume", "/Script/Engine.PostProcessVolume"),
-            unreal.Vector(0.0, 0.0, 100.0),
+            unreal.Vector(0.0, -2500.0, 200.0),
             unreal.Rotator(0.0, 0.0, 0.0),
             "DT_PostProcess",
             folder,
@@ -457,31 +628,98 @@ def setup_level_environment(scene: str, log_file=None):
         )
 
 
-def frame_camera_on_twin(locations, log_file=None):
-    """Point the perspective viewport at the twin (not the sky)."""
-    if locations:
-        cx = sum(v.x for v in locations) / float(len(locations))
-        cy = sum(v.y for v in locations) / float(len(locations))
-        cz = sum(v.z for v in locations) / float(len(locations))
-    else:
-        cx, cy, cz = 0.0, 0.0, 100.0
+def _ensure_fixed_view_camera():
+    """Keep a CameraActor in the level so the view can be restored on open."""
+    try:
+        subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    except Exception:
+        return None
+    loc = unreal.Vector(*TWIN_CAM_LOC)
+    rot = unreal.Rotator(*TWIN_CAM_ROT)
+    existing = None
+    try:
+        for actor in subsystem.get_all_level_actors():
+            try:
+                if actor.get_actor_label() == "DT_FixedView":
+                    existing = actor
+                    break
+            except Exception:
+                continue
+    except Exception:
+        existing = None
+    if existing is None:
+        cls = _resolve_actor_class("CameraActor", "/Script/Engine.CameraActor")
+        if cls is None:
+            return None
+        try:
+            existing = subsystem.spawn_actor_from_class(cls, loc, rot)
+        except Exception:
+            return None
+        if existing is None:
+            return None
+        _tag_actor(existing, "DT_FixedView", "DigitalTwin")
+    try:
+        existing.set_actor_location(loc, False, False)
+        existing.set_actor_rotation(rot, False)
+    except Exception:
+        try:
+            existing.set_actor_transform(unreal.Transform(loc, rot, unreal.Vector(1, 1, 1)), False, False)
+        except Exception:
+            pass
+    return existing
 
-    # Stand south of the cluster, looking toward +Y (at the twin)
-    cam_loc = unreal.Vector(cx, cy - 900.0, max(cz, 80.0) + 420.0)
-    cam_rot = unreal.Rotator(-28.0, 90.0, 0.0)
 
+def release_twin_camera():
+    """Stop any leftover tick that was forcing the viewport every frame."""
+    global _CAM_TICK_HANDLE
+    try:
+        if _CAM_TICK_HANDLE is not None:
+            unreal.unregister_slate_post_tick_callback(_CAM_TICK_HANDLE)
+    except Exception:
+        pass
+    _CAM_TICK_HANDLE = None
+    try:
+        if hasattr(unreal, "EditorLevelLibrary"):
+            unreal.EditorLevelLibrary.eject_preview_possessed_player()
+    except Exception:
+        pass
+
+
+def apply_twin_camera(log_file=None):
+    """Place the viewport once. The user can move it afterward."""
+    release_twin_camera()
+    cam_loc = unreal.Vector(*TWIN_CAM_LOC)
+    cam_rot = unreal.Rotator(*TWIN_CAM_ROT)
+    ok = False
     try:
         unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).set_level_viewport_camera_info(
             cam_loc, cam_rot
         )
+        ok = True
+    except Exception:
+        pass
+    try:
+        if hasattr(unreal, "EditorLevelLibrary"):
+            unreal.EditorLevelLibrary.set_level_viewport_camera_info(cam_loc, cam_rot)
+            ok = True
+    except Exception:
+        pass
+    if ok and log_file is not None:
         log_line(
-            "[DigitalTwin] Viewport framed @ ({:.0f},{:.0f},{:.0f})".format(
+            "[DigitalTwin] Viewport camera set @ ({:.0f},{:.0f},{:.0f})".format(
                 cam_loc.x, cam_loc.y, cam_loc.z
             ),
             log_file,
         )
-    except Exception as exc:
-        unreal.log_warning("[DigitalTwin] Camera frame failed: {}".format(exc))
+    return ok
+
+
+def lock_twin_camera(log_file=None):
+    apply_twin_camera(log_file)
+
+
+def frame_camera_on_twin(locations, log_file=None, top_down=False):
+    apply_twin_camera(log_file)
 
 
 def save_digital_twin_level(level_path: str, log_file=None):
@@ -602,13 +840,19 @@ def spawn_scene_from_json(scene_path: str, log_file=None) -> tuple[int, str]:
         level_path = "(current level)"
 
     clear_previous_twin()
-    setup_level_environment(scene, log_file)
+    _clear_old_imported_meshes(log_file)
+    is_bedroom = any(str(a.get("label", "")).lower() in {"bed", "nightstand", "vanity"} for a in actors)
+    ground = (0.50, 0.44, 0.36) if is_bedroom else (0.68, 0.69, 0.71)
+    setup_level_environment(
+        scene, log_file, ground_rgb=ground, ground_scale=20.0 if is_bedroom else 12.0
+    )
 
     subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
     spawned = 0
     locations = []
     total = max(len(actors), 1)
     folder = "DigitalTwin/{}".format(scene)
+    mesh_cache = {}
 
     with unreal.ScopedSlowTask(total, "Spawning Digital Twin") as slow:
         slow.make_dialog(True)
@@ -620,18 +864,55 @@ def spawn_scene_from_json(scene_path: str, log_file=None) -> tuple[int, str]:
                 1, "Spawning {} ({}/{})".format(spec.get("id"), i + 1, total)
             )
 
-            mesh = load_basic_mesh(spec.get("shape", "box"))
+            if spec.get("shape") == "imported" and spec.get("mesh_path"):
+                cache_key = spec.get("mesh_path")
+                mesh = mesh_cache.get(cache_key)
+                if mesh is None:
+                    mesh = import_obj_mesh(
+                        spec.get("mesh_path"), spec.get("label") or spec.get("id", "mesh"), log_file
+                    )
+                    if mesh is not None:
+                        mesh_cache[cache_key] = mesh
+                if mesh is None:
+                    mesh = load_basic_mesh("box")
+                    loc, rot = plotly_to_unreal(spec["location"], spec.get("yaw_deg", 0.0), unit)
+                    sx, sy, sz = spec.get("scale", [1, 1, 1])
+                    scale = unreal.Vector(
+                        (float(sx) * unit) / 100.0,
+                        (float(sz) * unit) / 100.0,
+                        (float(sy) * unit) / 100.0,
+                    )
+                elif spec.get("scale_mode") == "fit_aabb" or spec.get("label") == "scene":
+                    loc, rot = plotly_to_unreal(
+                        spec.get("location") or [0.0, 0.0, 0.0],
+                        spec.get("yaw_deg", 0.0),
+                        unit,
+                    )
+                    scale = _imported_uniform_scale(mesh, spec.get("scale") or [20, 8, 20], unit)
+                    loc = unreal.Vector(loc.x, loc.y, 0.0)
+                else:
+                    loc, rot = plotly_to_unreal(
+                        [spec["location"][0], 0.0, spec["location"][2]],
+                        spec.get("yaw_deg", 0.0),
+                        unit,
+                    )
+                    scale = _imported_scale(mesh, spec.get("scale") or [3, 3, 3], unit)
+                    lift_cm = float(spec.get("lift", spec["location"][1])) * unit
+                    loc = unreal.Vector(loc.x, loc.y, lift_cm + _mesh_extent_z(mesh) * scale.z)
+            else:
+                mesh = load_basic_mesh(spec.get("shape", "box"))
+                if mesh is None:
+                    continue
+                loc, rot = plotly_to_unreal(spec["location"], spec.get("yaw_deg", 0.0), unit)
+                sx, sy, sz = spec.get("scale", [1, 1, 1])
+                scale = unreal.Vector(
+                    (float(sx) * unit) / 100.0,
+                    (float(sz) * unit) / 100.0,
+                    (float(sy) * unit) / 100.0,
+                )
+
             if mesh is None:
                 continue
-
-            loc, rot = plotly_to_unreal(spec["location"], spec.get("yaw_deg", 0.0), unit)
-            sx, sy, sz = spec.get("scale", [1, 1, 1])
-            # Engine Cube/Cylinder are 100uu. scale = plotly extent * cm-per-unit / 100
-            scale = unreal.Vector(
-                (float(sx) * unit) / 100.0,
-                (float(sz) * unit) / 100.0,
-                (float(sy) * unit) / 100.0,
-            )
 
             actor = _spawn_mesh_actor(
                 subsystem,
@@ -658,23 +939,17 @@ def spawn_scene_from_json(scene_path: str, log_file=None) -> tuple[int, str]:
                 )
 
     log_line("[DigitalTwin] Spawned {} mesh part(s)".format(spawned), log_file)
-    frame_camera_on_twin(locations, log_file)
-    setup_level_environment(scene, log_file)
+    setup_level_environment(
+        scene, log_file, ground_rgb=ground, ground_scale=20.0 if is_bedroom else 12.0
+    )
 
     if level_path and level_path != "(current level)":
         save_digital_twin_level(level_path, log_file)
 
     try:
-        twin_actors = [
-            a
-            for a in subsystem.get_all_level_actors()
-            if str(a.get_actor_label()).startswith("DT_")
-            and not str(a.get_actor_label()).endswith("_label")
-            and a.get_actor_label() not in ("DT_Ground", "DT_DirectionalLight", "DT_SkyLight")
-        ]
-        if twin_actors:
-            subsystem.set_selected_level_actors(twin_actors[:1])
+        subsystem.set_selected_level_actors([])
     except Exception:
         pass
+    lock_twin_camera(log_file)
 
     return spawned, level_path

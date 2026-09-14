@@ -111,6 +111,7 @@ class ProgressPump:
         self.elapsed = 0.0
         self.next_status_at = self.STATUS_INTERVAL
         self._finished_once = False
+        self.process = None
 
     def start(self):
         def _reader():
@@ -119,11 +120,12 @@ class ProgressPump:
                 env = os.environ.copy()
                 env["PYTHONIOENCODING"] = "utf-8"
                 env["PYTHONUTF8"] = "1"
+                cwd = self.cwd if (self.cwd and os.path.isdir(self.cwd)) else None
                 process = subprocess.Popen(
                     self.argv,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    cwd=self.cwd,
+                    cwd=cwd,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
@@ -131,6 +133,7 @@ class ProgressPump:
                     env=env,
                     creationflags=creation,
                 )
+                self.process = process
                 assert process.stdout is not None
                 for line in process.stdout:
                     self.queue.put(line.rstrip("\n"))
@@ -143,6 +146,17 @@ class ProgressPump:
 
         threading.Thread(target=_reader, daemon=True).start()
         self.ticker_handle = unreal.register_slate_post_tick_callback(self._on_tick)
+
+    def cancel(self):
+        proc = self.process
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        self.return_code = 1
+        self._done.set()
+        self._unregister()
 
     def pump(self, max_lines=500):
         n = 0

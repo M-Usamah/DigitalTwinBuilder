@@ -1,14 +1,23 @@
 """Register Digital Twin Builder under Tools when the editor starts."""
 
+import os
+
 import unreal
 
 MENU_OWNER = "DigitalTwinBuilder"
 ENTRY_NAME = "BuildDigitalTwin"
+_PLUGIN_ENTRY = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "digital_twin_builder.py"
+).replace("\\", "/")
 PYTHON_COMMAND = (
-    "import importlib, digital_twin_builder; "
-    "importlib.reload(digital_twin_builder); "
-    "digital_twin_builder.run()"
-)
+    "import importlib.util, sys; "
+    "p = r'{path}'; "
+    "spec = importlib.util.spec_from_file_location('dtb_plugin_entry', p); "
+    "mod = importlib.util.module_from_spec(spec); "
+    "sys.modules['dtb_plugin_entry'] = mod; "
+    "spec.loader.exec_module(mod); "
+    "mod.run()"
+).format(path=_PLUGIN_ENTRY)
 
 
 def register_menus():
@@ -37,3 +46,4 @@ def register_menus():
 
 
 register_menus()
+

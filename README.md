@@ -14,9 +14,10 @@ This folder is **standalone**. Zip and share `DigitalTwinBuilder` only. You do *
 
 1. You pick **multiple images** (Ctrl+click) or **one video**.
 2. The plugin runs **YOLO-World** on **system Python 3.12** (not Unreal’s embedded Python).
-3. Detected objects (desk, chairs, laptop, monitor, etc.) are laid out as furniture parts.
-4. Colored unlit meshes are spawned into `/Game/DigitalTwin/Maps/Lvl_DigitalTwin`.
-5. Live progress streams to the **Output Log**.
+3. Detected objects (desk, chairs, bed, kitchen appliances, etc.) are placed from the **model’s 2D boxes**, not a hardcoded room.
+4. Colored unlit furniture is spawned into `/Game/DigitalTwin/Maps/Lvl_DigitalTwin`.
+5. The run folder also gets `digital_twin.html` (3D preview) and `topdown.png`.
+6. Live progress streams to the **Output Log**.
 
 Unreal Python only handles the file picker, progress, and spawning. Detection always uses `py -3.12`.
 
@@ -30,7 +31,7 @@ Unreal Python only handles the file picker, progress, and spawning. Detection al
 | **Python Editor Script Plugin** | Built-in Unreal plugin |
 | **Editor Scripting Utilities** | Built-in Unreal plugin |
 | **Python 3.12** on Windows | `py -3.12` launcher |
-| pip packages | `ultralytics`, `opencv-python`, `numpy` |
+| pip packages | `ultralytics`, `opencv-python`, `numpy`, `pillow`, `transformers`, `plotly` |
 
 ---
 
@@ -168,7 +169,13 @@ DigitalTwinBuilder/
     └── Pipeline/                   # System Python 3.12 (YOLO + layout)
         ├── export_unreal_scene.py
         ├── dt_detect.py
+        ├── dt_layout.py            # Detection-first floor plan
         ├── dt_furniture.py
+        ├── plot_unreal_scene.py    # HTML + top-down PNG
+        ├── dt_models.py
+        ├── dt_reconstruct.py       # Optional depth mesh
+        ├── dt_trellis.py           # Optional TRELLIS.2
+        ├── dt_triposr.py           # Optional TripoSR
         └── requirements.txt
 ```
 

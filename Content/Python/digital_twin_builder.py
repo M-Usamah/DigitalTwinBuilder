@@ -1,13 +1,12 @@
 """
 Digital Twin Builder — Unreal Editor entry (plugin).
 
-All preprocess code lives in this plugin's Content/Python/Pipeline folder.
-Does not import from Content/python/EditorTools or ObjectLocator.
+Loads sibling modules from THIS folder only so EditorTools copies cannot steal imports.
 """
 
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -15,39 +14,63 @@ import sys
 import traceback
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_local(name: str):
+    path = os.path.join(_HERE, name + ".py")
+    key = "dtb_plugin_" + name
+    spec = importlib.util.spec_from_file_location(key, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[key] = mod
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# Drop the old EditorTools folder so `import dt_paths` cannot resolve there.
+_cleaned = []
+for _p in sys.path:
+    normp = os.path.normpath(_p).lower()
+    if "editortools" in normp and "digitaltwinbuilder" in normp:
+        continue
+    _cleaned.append(_p)
+sys.path[:] = _cleaned
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-for _mod_name in ("dt_paths", "dt_picker", "dt_progress", "dt_materials", "dt_spawn"):
-    if _mod_name in sys.modules:
-        importlib.reload(sys.modules[_mod_name])
+for _stale in ("dt_paths", "dt_picker", "dt_progress", "dt_materials", "dt_spawn"):
+    sys.modules.pop(_stale, None)
 
-import unreal
+dt_paths = _load_local("dt_paths")
+dt_picker = _load_local("dt_picker")
+dt_progress = _load_local("dt_progress")
+dt_spawn = _load_local("dt_spawn")
 
-from dt_paths import (
-    export_script_path,
-    norm,
-    pipeline_dir,
-    plugin_python_dir,
-    project_dir,
-    output_run_dir,
-)
-from dt_picker import pick_media_files, show_message
-from dt_progress import (
-    ProgressPump,
-    close_log,
-    create_log_file,
-    find_python_cmd,
-    get_log_file_path,
-    log_line,
-    open_output_log,
-)
-from dt_spawn import spawn_scene_from_json
+import unreal  # noqa: E402
+
+export_script_path = dt_paths.export_script_path
+norm = dt_paths.norm
+pipeline_dir = dt_paths.pipeline_dir
+plugin_python_dir = dt_paths.plugin_python_dir
+project_dir = dt_paths.project_dir
+output_run_dir = dt_paths.output_run_dir
+pick_media_files = dt_picker.pick_media_files
+show_message = dt_picker.show_message
+ProgressPump = dt_progress.ProgressPump
+close_log = dt_progress.close_log
+create_log_file = dt_progress.create_log_file
+find_python_cmd = dt_progress.find_python_cmd
+get_log_file_path = dt_progress.get_log_file_path
+log_line = dt_progress.log_line
+open_output_log = dt_progress.open_output_log
+spawn_scene_from_json = dt_spawn.spawn_scene_from_json
+lock_twin_camera = dt_spawn.lock_twin_camera
+release_twin_camera = dt_spawn.release_twin_camera
 
 _ACTIVE_SESSION = None
 
 
-def _on_preprocess_finished(pump: ProgressPump):
+def _on_preprocess_finished(pump):
     global _ACTIVE_SESSION
     log_file = pump.log_file
     try:
@@ -79,7 +102,7 @@ def _on_preprocess_finished(pump: ProgressPump):
             "Digital Twin — Complete",
             "Spawned {} object(s).\n\nLevel:\n{}\n\n"
             "Open Content Browser → DigitalTwin/Maps\n"
-            "Viewport should look at the twin (not the sky).\n\nLog:\n{}".format(
+            "Move the viewport freely (RMB + WASD).\n\nLog:\n{}".format(
                 count, level_path, get_log_file_path() or ""
             ),
         )
@@ -96,13 +119,21 @@ def run():
     global _ACTIVE_SESSION
     unreal.log("[DigitalTwin] === Build Digital Twin started ===")
     try:
+        release_twin_camera()
+    except Exception:
+        pass
+    try:
         unreal.log_flush()
     except Exception:
         pass
 
     if _ACTIVE_SESSION is not None:
-        show_message("Digital Twin", "Already running — check Output Log.")
-        return
+        unreal.log("[DigitalTwin] Previous build still marked running — cancelling it.")
+        try:
+            _ACTIVE_SESSION.cancel()
+        except Exception:
+            pass
+        _ACTIVE_SESSION = None
 
     paths = pick_media_files()
     if not paths:
@@ -121,12 +152,14 @@ def run():
         pipe = pipeline_dir()
         export_py = export_script_path()
         out_dir = output_run_dir()
+        work_dir = pipe if os.path.isdir(pipe) else plugin_py
 
         log_line("[DigitalTwin] Plugin:  {}".format(plugin_py), log_file)
         log_line("[DigitalTwin] Pipeline: {}".format(pipe), log_file)
         log_line("[DigitalTwin] Export:   {}".format(export_py), log_file)
         log_line("[DigitalTwin] Project:  {}".format(project_dir()), log_file)
         log_line("[DigitalTwin] Output:   {}".format(out_dir), log_file)
+        log_line("[DigitalTwin] Work dir: {}".format(work_dir), log_file)
 
         if not os.path.isfile(export_py):
             msg = (
@@ -155,6 +188,7 @@ def run():
             argv.append("--extra")
             argv.extend(abs_paths[1:])
 
+        os.environ.setdefault("DT_MESH_BACKEND", "prims")
         log_line("[DigitalTwin] Files: {}".format(len(abs_paths)), log_file)
         for p in abs_paths:
             log_line("  - {}".format(p), log_file)
@@ -162,7 +196,7 @@ def run():
         log_line("[DigitalTwin] Cmd: {}".format(subprocess.list2cmdline(argv)), log_file)
         log_line("[DigitalTwin] Preprocess RUNNING...", log_file)
 
-        pump = ProgressPump(argv, pipe, log_file, out_dir, _on_preprocess_finished)
+        pump = ProgressPump(argv, work_dir, log_file, out_dir, _on_preprocess_finished)
         _ACTIVE_SESSION = pump
         pump.start()
         log_file = None

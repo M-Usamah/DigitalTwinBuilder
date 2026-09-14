@@ -59,6 +59,31 @@ OFFICE_CLASSES = [
     "tv",
     "computer",
 ]
+KITCHEN_CLASSES = [
+    "sink",
+    "kitchen sink",
+    "oven",
+    "stove",
+    "gas stove",
+    "cooktop",
+    "refrigerator",
+    "fridge",
+    "microwave",
+    "toaster",
+    "kettle",
+    "dishwasher",
+    "cabinet",
+    "kitchen cabinet",
+    "range hood",
+    "extractor hood",
+    "kitchen island",
+    "chair",
+    "stool",
+    "plant",
+    "potted plant",
+    "vase",
+    "faucet",
+]
 LABEL_ALIASES = {
     "armchair": "chair",
     "office chair": "chair",
@@ -74,6 +99,16 @@ LABEL_ALIASES = {
     "television": "tv",
     "potted plant": "plant",
     "handbag": "backpack",
+    "kitchen sink": "sink",
+    "gas stove": "stove",
+    "cooktop": "stove",
+    "fridge": "refrigerator",
+    "extractor hood": "range_hood",
+    "range hood": "range_hood",
+    "kitchen island": "island",
+    "kitchen cabinet": "cabinet",
+    "stool": "chair",
+    "faucet": "sink",
 }
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 VIDEO_EXTS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".m4v", ".webm"}
@@ -88,26 +123,104 @@ def bundled_weights_path() -> Path:
     return Path(__file__).resolve().parent / DEFAULT_DET_MODEL
 
 
+def is_usable_checkpoint(path: str | Path) -> bool:
+    """True only for a real PyTorch/Ultralytics weight file (not a Git LFS pointer)."""
+    p = Path(path)
+    try:
+        if not p.is_file():
+            return False
+        size = p.stat().st_size
+        if size < 1024 * 1024:
+            return False
+        with p.open("rb") as f:
+            head = f.read(80)
+        if head.startswith(b"version https://git-lfs.github.com"):
+            return False
+        return True
+    except OSError:
+        return False
+
+
+def quarantine_lfs_pointer(path: Path) -> None:
+    """Rename a Git LFS pointer so Ultralytics can download a real checkpoint."""
+    if not path.is_file() or is_usable_checkpoint(path):
+        return
+    dest = path.with_name(path.name + ".lfs-pointer")
+    try:
+        if dest.exists():
+            dest.unlink()
+        path.rename(dest)
+        print("Ignored Git LFS pointer (not real weights): {}".format(path.name), flush=True)
+    except OSError:
+        pass
+
+
 def resolve_model_path(model_path: str | Path | None = None) -> str:
+    """Return a loadable local .pt, or the Ultralytics name so it will be downloaded."""
+    candidates = []
     if model_path:
-        p = Path(model_path)
-        if p.is_file():
+        candidates.append(Path(model_path))
+    candidates.append(bundled_weights_path())
+    for p in candidates:
+        if is_usable_checkpoint(p):
             return str(p)
-        if str(model_path):
-            return str(model_path)
-    local = bundled_weights_path()
-    if local.is_file():
-        return str(local)
+        if p.is_file():
+            quarantine_lfs_pointer(p)
     return DEFAULT_DET_MODEL
+
+
+def _cache_downloaded_weights(model: YOLO) -> None:
+    """Copy a downloaded Ultralytics checkpoint into the plugin Pipeline folder."""
+    dest = bundled_weights_path()
+    if is_usable_checkpoint(dest):
+        return
+    src = None
+    for attr in ("ckpt_path", "weights"):
+        val = getattr(model, attr, None)
+        if val and is_usable_checkpoint(val):
+            src = Path(str(val))
+            break
+    if src is None:
+        from ultralytics.utils import WEIGHTS_DIR
+
+        guessed = Path(WEIGHTS_DIR) / DEFAULT_DET_MODEL
+        if is_usable_checkpoint(guessed):
+            src = guessed
+    if src is None:
+        cwd = Path.cwd() / DEFAULT_DET_MODEL
+        if is_usable_checkpoint(cwd):
+            src = cwd
+    if src is None:
+        return
+    try:
+        import shutil
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        print("Cached downloaded weights at {}".format(dest), flush=True)
+    except OSError as exc:
+        print("Could not cache weights ({}): {}".format(dest, exc), flush=True)
 
 
 def load_detector(model_path: str | Path | None = None, scene: str = "auto") -> YOLO:
     path = resolve_model_path(model_path)
-    model = YOLO(str(path))
+    clip_local = Path(__file__).resolve().parent / "weights" / "clip" / "ViT-B-32.pt"
+    quarantine_lfs_pointer(clip_local)
+    try:
+        model = YOLO(str(path))
+    except Exception as exc:
+        print(
+            "Local YOLO checkpoint failed ({}); downloading {} ...".format(exc, DEFAULT_DET_MODEL),
+            flush=True,
+        )
+        model = YOLO(DEFAULT_DET_MODEL)
+    _cache_downloaded_weights(model)
     if scene == "office":
         classes = OFFICE_CLASSES
+    elif scene == "kitchen":
+        classes = KITCHEN_CLASSES
     elif scene in ("auto", "any"):
-        classes = list(dict.fromkeys(list(OFFICE_CLASSES) + list(BEDROOM_CLASSES)))
+        classes = list(dict.fromkeys(list(OFFICE_CLASSES) + list(BEDROOM_CLASSES) + list(KITCHEN_CLASSES)))
     else:
         classes = BEDROOM_CLASSES
     name = Path(path).name.lower()
